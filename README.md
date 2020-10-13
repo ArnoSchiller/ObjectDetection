@@ -1,2 +1,2 @@
-# objectDetection
-This Repository contains different tests of existing and created object detection models. Each branch includes one model, see README.md of the branch for more informations, 
+# TensorFlow Object Detection API
+This repository includes the TensorFlow Object Detection API without any adaptions. See the Getting Started Tutorial to know how to setup the API.
