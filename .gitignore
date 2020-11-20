@@ -348,3 +348,21 @@ MigrationBackup/
 
 # Ionide (cross platform F# VS Code tools) working folder
 .ionide/
+
+Colab Notebooks/.ipynb_checkpoints/
+
+*.ini
+
+Colab Notebooks/eager_few_shot_od_training_tflite.ipynb
+
+Colab Notebooks/ix_tutorial.ipynb
+
+created_models/
+
+datasets/
+
+trained_models/
+
+tf2_object_detection_API/pretrained_models/
+
+test/
