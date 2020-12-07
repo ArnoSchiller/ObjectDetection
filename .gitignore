@@ -366,3 +366,5 @@ trained_models/
 tf2_object_detection_API/pretrained_models/
 
 test/
+
+python_modules/datasetHandling/TEMP_DOWNLOADS/
