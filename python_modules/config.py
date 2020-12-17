@@ -2,7 +2,7 @@
 import os
 
 def get_base_path():
-    path = os.path.dirname(__file__)
+    path = os.path.abspath(os.path.dirname(__file__))
     while len(os.path.split(path)) >= 1 and not os.path.split(path)[-1].lower() == "objectdetection":
         path = os.path.dirname(path)
     return path

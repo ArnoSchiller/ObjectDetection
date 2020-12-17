@@ -6,6 +6,8 @@ import boto3
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from config import DATASET_PATH
+from dataAugmentation.image_augmentation import ImageAugmentation
+from helpers.xml_handler import XMLHandler
 
 ACCESS_KEY      = "minio"
 SECRET_KEY      = "miniostorage"
@@ -49,10 +51,135 @@ class DatasetHandler:
                         verify=True,
                         config=boto3.session.Config(signature_version='s3v4'))
 
+    def augmentate_dataset(self, dataset_name):
+        """
+        Download not augmentated images and augmentate them. Also duplicate the label file and upload both. 
+        """
+        dataset_part = "shrimp_detection"
+        cloud_download_dir = "data/" + dataset_part + "/"
+        #cloud_upload_dir = "data/" + dataset_part + "_aug" + "/"
+        cloud_upload_dir = "data/" + dataset_part + "_gray" + "/"
+
+        local_download_dir = os.path.join(os.path.dirname(__file__), "aug_temp")
+        if not os.path.exists(local_download_dir):
+            os.mkdir(local_download_dir)
+        
+        dataset_files = self.get_complete_dataset_list(dataset_name, filter_str=dataset_part+"/")
+        print(len(dataset_files))
+
+        #augmented_files = self.get_complete_dataset_list(dataset_name, filter_str="shrimp_detection_aug/")
+        augmented_files = self.get_complete_dataset_list(dataset_name, filter_str="shrimp_detection_gray/")
+
+        for aug_file in augmented_files:
+            baseparts = aug_file.split("_")[0:-1]
+            basename = ""
+            for index, part in enumerate(baseparts):
+                basename += part
+                if index < len(baseparts) - 1:
+                     basename += "_"
+            if dataset_files.count(basename) > 0:
+                dataset_files.remove(basename)
+        print(len(dataset_files))
+
+        img_aug = ImageAugmentation()
+
+        for index, filename in enumerate(dataset_files):
+            print("Augmentation file {} of {}".format(index, len(dataset_files)))
+            
+            ## download
+            image_file_path = cloud_download_dir + filename + ".png"
+            local_img_path = os.path.join(local_download_dir, filename + ".png")
+            self.s3_client.download_file(dataset_name, image_file_path, local_img_path)
+
+            xml_file_path = cloud_download_dir + filename + ".xml"
+            local_xml_path = os.path.join(local_download_dir, filename + ".xml")
+            self.s3_client.download_file(dataset_name, xml_file_path, local_xml_path)
+
+            ## augmentation
+            created_file_paths = img_aug.augmentate_image_file(local_img_path)
+
+            ## upload and delete
+            for file_path in created_file_paths:
+                _, filename = os.path.split(file_path)
+                cloud_path = cloud_upload_dir + filename
+                self.s3_client.upload_file(file_path, dataset_name, cloud_path)
+
+                os.remove(file_path)
+        
+            os.remove(local_xml_path)
+            os.remove(local_img_path)
+
+    def count_labels(self, csv_file_paths, output_tag):
+        labels_dict = {}
+        labels_dict["summary"] = {}
+        labels_dict["summary"]["sum"] = 0 
+
+        for file_path in csv_file_paths:
+            file_name = os.path.split(file_path)[-1]
+            labels_dict[file_name] = {}
+            labels_dict[file_name]["sum"] = 0 
+            # einlesen der csv file
+            
+            with open(file_path) as csv_file:
+                csv_reader_object = csv.DictReader(csv_file)
+                for row in csv_reader_object:
+                    class_name = row["class"]
+
+                    if not list(labels_dict[file_name].keys()).count(class_name) > 0:
+                        labels_dict[file_name][class_name] = 0
+                    if not list(labels_dict["summary"].keys()).count(class_name) > 0:
+                        labels_dict["summary"][class_name] = 0
+
+                    labels_dict[file_name][class_name] += 1 
+                    labels_dict[file_name]["sum"] += 1 
+
+                    labels_dict["summary"][class_name] += 1
+                    labels_dict["summary"]["sum"] += 1
+
+        print(labels_dict)
+
+
+    def update_xml_files(self, dataset_name, changes=[], filter_str=""):
+        
+        xml_handler = XMLHandler()
+
+        # cloud_download_dir = "data/shrimp_detection_aug/"
+        cloud_download_dir = "data/shrimp_detection_gray/"
+
+        local_download_dir = os.path.join(os.path.dirname(__file__), "TEMP_XML")
+        if not os.path.exists(local_download_dir):
+            os.mkdir(local_download_dir)
+        
+        dataset_files =  self.get_complete_dataset_list(dataset_name, filter_str=cloud_download_dir)
+        # dataset_files = ['test1_cronjob_2020-09-30_12-37-56_100_brighter']
+        for index, file_name in enumerate(dataset_files):
+            print("Updating file {} of {}".format(index+1, len(dataset_files)))
+            # download
+            cloud_path = cloud_download_dir + file_name + ".xml"
+            local_path = os.path.join(local_download_dir, file_name + ".xml")
+            self.s3_client.download_file(dataset_name, cloud_path, local_path)
+
+            # change xml file
+            for change in changes:
+                if change == "file_name":
+                    xml_handler.change_xml_file(local_path, change, file_name + ".png")
+                if change == "file_path":
+                    path = cloud_download_dir + file_name + ".png"
+                    xml_handler.change_xml_file(local_path, change, path)
+                if change == "folder":
+                    # folder = "shrimp_detection_aug"
+                    folder = "shrimp_detection_gray"
+                    xml_handler.change_xml_file(local_path, change, folder)
+
+            # upload
+            self.s3_client.upload_file(local_path, dataset_name, cloud_path)
+
+            # delete
+            os.remove(local_path)
+
     def upload_missing_images(self, bucket_name, image_dir_path):
 
         png_files = glob.glob(os.path.join(image_dir_path, "*.png"))
-        xml_files = glob.glob(os.path.join(self.download_dir, "*.xml"))
 
         for index, file_path in enumerate(png_files):
             print("File {} of {}.".format(index+1, len(png_files)))
@@ -68,7 +195,6 @@ class DatasetHandler:
                 os.remove(file_path)
                 """
                 self.s3_client.upload_file(image_path, bucket_name, "images/{}.png".format(name))
-
 
     def create_dataset_version(self, bucket_name, version_id, full_path=True):
         version_name = "version_{}".format(version_id)
@@ -88,7 +214,6 @@ class DatasetHandler:
             os.mkdir(temp_dir)
 
         if full_path:
-            """
             for data_path in data_list:
                 data_name = data_path.split("/")[-1]
                 
@@ -167,7 +292,6 @@ class DatasetHandler:
             os.rmdir(temp_dir)
         #"""
 
-
     def define_dataset_version(self, bucket_name, version_name, full_path=True):
         ## define dataset version, write every used image into txt
 
@@ -175,14 +299,14 @@ class DatasetHandler:
             return
         images_file_name = "images.txt"
         bucket = self.s3_resource.Bucket(bucket_name)
-        
+        """
         for bucket_object in bucket.objects.all():
             object_name = str(bucket_object.key)
             if object_name.count(version_name) > 0:
                 print("Version ", version_name, " allready exists.")
                 return
-        
-        all_images = self.get_all_image_names(bucket_name, full_path=True)
+        """
+        all_images = self.get_complete_dataset_list(bucket_name, full_path=full_path, filter_str="shrimp_detection/")
         print("Selected {} images to define version".format(len(all_images)))
 
         with open(images_file_name, "w") as out_file:
@@ -194,7 +318,7 @@ class DatasetHandler:
 
         os.remove(images_file_name)
     
-    def get_complete_dataset_list(self, bucket_name, full_path=False):
+    def get_complete_dataset_list(self, bucket_name, filter_str=None, full_path=False):
 
         if not self.bucket_names.count(bucket_name) > 0:
             return False
@@ -207,27 +331,35 @@ class DatasetHandler:
         for bucket_object in bucket.objects.all():
             object_name = str(bucket_object.key)
             if object_name.count("xml") > 0:
-                filepath = object_name.split(".")[0]
-                filename = filepath.split("/")[-1]
-                xml_file_names.append(filename)
-                
+                if filter_str is None or object_name.count(filter_str) > 0:
+                    filepath = object_name.split(".")[0]
+                    filename = filepath.split("/")[-1]
+                    xml_file_names.append(filename)
+                    
         for bucket_object in bucket.objects.all():
             object_name = str(bucket_object.key)
             if object_name.count("png") > 0:
-                filepath = object_name.split(".")[0]
-                filename = filepath.split("/")[-1]
-                if xml_file_names.count(filename) > 0:
-                    if full_path:
-                        dataset_files.append(filepath)
-                    else:
-                        dataset_files.append(filename)
+                if filter_str is None or object_name.count(filter_str) > 0:
+                    filepath = object_name.split(".")[0]
+                    filename = filepath.split("/")[-1]
+                    if xml_file_names.count(filename) > 0:
+                        if full_path:
+                            dataset_files.append(filepath)
+                        else:
+                            dataset_files.append(filename)
 
         return dataset_files
 
-    def download_evaluation_set(self, dataset_name, dataset_version, mode="csv"):
+    def download_evaluation_set(self, dataset_name, dataset_version, mode="csv", force_download=False):
         download_dir = os.path.join(DATASET_PATH, dataset_name, dataset_version)
-        if not os.path.exists(download_dir):
+        if not os.path.exists(download_dir) or force_download:
             os.mkdir(download_dir) 
+        else:
+            print("Directory allready exists: {}. Set force_download to True to overwrite files.".format(download_dir))
+            labelmap_name = "labelmap.pbtxt"
+            labelmap_path = os.path.join(download_dir, labelmap_name)
+            images_path = os.path.join(download_dir, "eval_images")
+            return labelmap_path, images_path, []
         
         # download labelmap
         labelmap_name = "labelmap.pbtxt"
@@ -251,9 +383,10 @@ class DatasetHandler:
                     if not eval_images.count(file_name) > 0:
                         eval_images.append(file_name)
 
-            download_dir = os.path.join(download_dir, "eval_images")
-            if not os.path.exists(download_dir):
-                os.mkdir(download_dir) 
+            images_path = os.path.join(download_dir, "eval_images")
+            if not os.path.exists(images_path):
+                os.mkdir(images_path) 
+            
             """
             bucket = self.s3_resource.Bucket(dataset_name)
             for bucket_object in bucket.objects.all():
@@ -261,14 +394,15 @@ class DatasetHandler:
                 if object_name.count("data") > 0:
                     file_name = object_name.split("/")[-1]
                     if eval_images.count(file_name) > 0:
-                        local_path = os.path.join(download_dir, file_name)
+                        local_path = os.path.join(images_path, file_name)
                         self.s3_client.download_file(dataset_name, object_name, local_path)
-            """"""
+            """
+
             for file_name in eval_images:
                 cloud_path = "data/shrimp_detection/" + file_name
-                local_path = os.path.join(download_dir, file_name)
+                local_path = os.path.join(images_path, file_name)
                 self.s3_client.download_file(dataset_name, cloud_path, local_path)
-            """
+            
             downloaded_images = glob.glob(os.path.join(download_dir, "*.png"))
             downloaded_images = [os.path.split(path)[-1] for path in downloaded_images]
 
@@ -276,7 +410,7 @@ class DatasetHandler:
 
             print("Downloaded {}/{} evaluation images".format(len(downloaded_images), len(eval_images)))
 
-            return labelmap_path, list(not_downloaded)
+            return labelmap_path, images_path, list(not_downloaded)
 
     def download_not_labeled_images(self, bucket_name=None):
         
@@ -527,7 +661,16 @@ if __name__ == "__main__":
     #dsh.create_dataset_config(dsh.bucket_names[0])
     
     
-    #dsh.create_dataset_version(dsh.bucket_names[0],"2020-12-01")
+    #dsh.create_dataset_version(dsh.bucket_names[1],"2020-12-01")
     #dsh.create_dataset_config(dsh.bucket_names[0])
     
-    dsh.download_evaluation_set(dsh.bucket_names[0],"version_2020-12-01")
+    #dsh.download_evaluation_set(dsh.bucket_names[0],"version_2020-12-01")
+
+    #dsh.augmentate_dataset(dsh.bucket_names[1])
+
+    #dsh.update_xml_files(dsh.bucket_names[1], changes=["file_name", "file_path", "folder"])
+
+    dir_path = os.path.join(os.path.dirname(__file__), "TEMP_COUNT")
+    # paths = [os.path.join(dir_path, "train.csv"), os.path.join(dir_path, "test.csv")]
+    paths = [os.path.join(dir_path, "train.csv"), os.path.join(dir_path, "test.csv"), os.path.join(dir_path, "eval.csv")]
+    dsh.count_labels(paths, "test_log")

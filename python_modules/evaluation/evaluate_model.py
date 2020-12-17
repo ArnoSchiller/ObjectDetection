@@ -9,16 +9,52 @@ import matplotlib.pyplot as plt
 
 from datasetHandling.dataset_handler import DatasetHandler
 from helpers.iou import compute_iou as calc_iou
+from helpers.xml_to_csv import convert_to_csv
 from config import DATASET_PATH
+
+from custom_models.pt_model import detect
 
 class ModelEvaluator():
     def __init__(self):
         ## ADD MODEL SELECTION?
+        self.dataset_handler = DatasetHandler()
+
         self.dataset_name = "dataset-v1-dih4cps"
         self.dataset_version = "version_2020-12-01"
 
         self.with_plots = True
+
+    def prepare_evaluation(self, dataset_name, dataset_version, model_name):
+
+        pred_logger = PredictionLogger(model_name)
         
+        dataset_path = os.path.join(DATASET_PATH, dataset_name, dataset_version)
+        images_path = os.path.join(dataset_path, "eval_images")
+        labelmap_path, _,_ = self.dataset_handler.download_evaluation_set(dataset_name=dataset_name, dataset_version=dataset_version, mode="csv")
+        classes = self.dataset_handler.get_classes_from_labelmap(labelmap_path)
+
+        WEIGHTS_PATH = os.path.join(BASE_PATH, "trained_models",model_name, "best.pt")
+        IMG_SIZE = 640
+
+        gt_dict = pred_logger.load_evaluation_set(dataset_path)
+        pred_dict = detect(images_path, WEIGHTS_PATH, IMG_SIZE, original_img_size=(640,480,3), xml_out=False, dict_out=True,all_classes=classes)
+        
+        complete_dict = {}
+        complete_dict['gt_boxes'] = gt_dict
+        complete_dict['pred_boxes'] = pred_dict
+
+        output_path = os.path.join(BASE_PATH, "evaluation", model_name)
+        if not os.path.exists(output_path):
+            os.mkdir(output_path)
+        output_path = os.path.join(output_path, dataset_name + "_" + dataset_version)
+        if not os.path.exists(output_path):
+            os.mkdir(output_path)
+        output_path = os.path.join(output_path, "gt_pred.txt")
+        
+        pred_logger.save_pred_log(complete_dict, output_path)
+        
+        return output_path
+
     def calculate_mAP(self, classes, results):
         res_classes = []
         sum_ap = 0
@@ -39,7 +75,7 @@ class ModelEvaluator():
         AP_recalls = np.linspace(0.0, 1.0, 11)
         for recall_level in AP_recalls:
             try:
-                args= np.argwhere(recalls>recall_level).flatten()
+                args= np.argwhere(recalls>=recall_level).flatten()
                 prec= max(precisions[args])
 
                 """
@@ -87,11 +123,12 @@ class ModelEvaluator():
             recall=0.0
         return (precision, recall)
 
-    def evaluate_model(self, model):
-        self.pred_logger = PredictionLogger(model)
+    def evaluate_model(self, model, log_path):
+        pred_logger = PredictionLogger(model)
 
-        gt_boxes = self.pred_logger.load_evaluation_set(self.dataset_name, self.dataset_version, "csv")
+        gt_boxes, pred_boxes = pred_logger.load_predictions(log_path)
 
+        """
         pred_boxes = {}
         for class_name in gt_boxes.keys():
             pred_boxes[class_name] = {}
@@ -101,6 +138,7 @@ class ModelEvaluator():
                 scores = np.random.rand(len(boxes)).tolist()
                 pred_boxes[class_name][image_id]["boxes"] = boxes
                 pred_boxes[class_name][image_id]["scores"] = scores
+        """
 
         results = {}
         classes = gt_boxes.keys()
@@ -156,18 +194,25 @@ class ModelEvaluator():
                 gt_boxes_img = gt_boxes[img_id]
 
                 # load predicted bb where the score is higher than the threshold 
-                pred_boxes_img = pred_boxes_pruned[img_id]
-                box_scores = pred_boxes_img['scores']
-                start_idx = 0
-                for score in box_scores:
-                    if score <= model_score_thr:
-                        start_idx += 1
-                    else:
-                        break 
+                if list(pred_boxes_pruned.keys()).count(img_id):
+                    pred_boxes_img = pred_boxes_pruned[img_id]
+                    box_scores = pred_boxes_img['scores']
+                    start_idx = 0
+                    for score in box_scores:
+                        if score <= model_score_thr:
+                            start_idx += 1
+                        else:
+                            break 
 
-                # Remove boxes, scores of lower than threshold scores:
-                pred_boxes_img['scores'] = pred_boxes_img['scores'][start_idx:]
-                pred_boxes_img['boxes'] = pred_boxes_img['boxes'][start_idx:]
+                    # Remove boxes, scores of lower than threshold scores:
+                    pred_boxes_img['scores'] = pred_boxes_img['scores'][start_idx:]
+                    pred_boxes_img['boxes'] = pred_boxes_img['boxes'][start_idx:]
+
+                else:
+                    pred_boxes_img = {}
+                    pred_boxes_img['boxes'] = []
+                    pred_boxes_img['scores'] = []
+
 
                 img_res = self.get_single_image_results(gt_boxes_img, pred_boxes_img['boxes'], iou_thr)
                 
@@ -175,7 +220,7 @@ class ModelEvaluator():
                 img_results[img_id] = img_res
                 total_img_res[img_id] = img_res
 
-                prec, rec = self.calculate_precision_recall(img_results)
+                prec, rec = self.calculate_precision_recall(total_img_res)
                 precisions.append(prec)
                 recalls.append(rec)
         
@@ -213,7 +258,7 @@ class ModelEvaluator():
         Args:
             gt_boxes (list of list of floats): list of locations of ground truth
                 objects as [xmin, ymin, xmax, ymax]
-            pred_boxes (dict): dict of dicts of 'boxes' (formatted like `gt_boxes`) and 'scores' (list of floats)
+            pred_boxes (dict): list of predicted boxes (formatted like `gt_boxes`) 
             iou_thr (float): value of IoU to consider as threshold for a
                 true prediction
         Returns:
@@ -303,85 +348,104 @@ class ModelEvaluator():
         plt.plot(recalls, precisions)
         plt.plot(AP_recall, AP_prec, '.')
         plt.xlabel("Recall")
-        plt.xlabel("Precision")
+        plt.ylabel("Precision")
         plt.show()
+        plt.savefig("pr_plot.png")
 
 
 import json
 from config import BASE_PATH
 class PredictionLogger():
     def __init__(self, model_name):
+        """
         log_path = os.path.join(BASE_PATH, "evaluation")
         log_ext = "_log.json"
         self.model_log_path = os.path.join(log_path, model_name + log_ext)
-    
+        """
         self.dataset_handler = DatasetHandler()
 
-    def load_evaluation_set(self, dataset_name, dataset_version, mode="csv"):
+    #def load_evaluation_set(self, dataset_name, dataset_version, mode="csv"):
+    def load_evaluation_set(self, dataset_path, mode="csv"):
 
         if mode == "csv":
-            file_path = os.path.join(DATASET_PATH, dataset_name, dataset_version, "eval.csv")
-            
-            labelmap_path, not_downloaded_files = self.dataset_handler.download_evaluation_set(dataset_name, dataset_version, "csv")
+            labelmap_path = os.path.join(dataset_path, "labelmap.pbtxt")
+            classes = self.dataset_handler.get_classes_from_labelmap(labelmap_path)
+
+            dataset_name, dataset_version = os.path.split(dataset_path)
+            _, dataset_name = os.path.split(dataset_path)
             print("Loading evalation set from {} ({})".format(dataset_name, dataset_version)) 
 
             # load csv file
-            csv_path = os.path.join(DATASET_PATH, dataset_name, dataset_version, "eval.csv")
-
+            gt_csv_path = os.path.join(dataset_path, "eval.csv")
+            csv_files = [gt_csv_path]
             
-            gt_dict = {}
-            classes = self.dataset_handler.get_classes_from_labelmap(labelmap_path)
-            for class_name in classes:
-                gt_dict[class_name] = {}
+            res_dicts = []
 
-            with open(csv_path) as csvfile:
-                    csv_reader_object = csv.DictReader(csvfile)
-                    for row in csv_reader_object:
-                        class_name = row['class']
-                        file_name = row['filename']
-                        bbox = [int(row['xmin']), int(row['ymin']), int(row['xmax']), int(row['ymax'])]
-                        if list(gt_dict[class_name].keys()).count(file_name) > 0:
-                            gt_dict[class_name][file_name].append(bbox)
-                        else:    
-                            gt_dict[class_name][file_name] = [bbox]
-            return gt_dict        
+            for csv_path in csv_files:
+                res_dict = {}
+                for class_name in classes:
+                    res_dict[class_name] = {}
+
+                with open(csv_path) as csvfile:
+                        csv_reader_object = csv.DictReader(csvfile)
+                        for row in csv_reader_object:
+                            class_name = row['class']
+                            file_name = row['filename']
+                            bbox = [int(row['xmin']), int(row['ymin']), int(row['xmax']), int(row['ymax'])]
+                            if list(res_dict[class_name].keys()).count(file_name) > 0:
+                                res_dict[class_name][file_name].append(bbox)
+                            else:    
+                                res_dict[class_name][file_name] = [bbox]
+                res_dicts.append(res_dict)  
+
+            return res_dicts      
             
         elif mode == "xml":
-            print("xml - not implemented yet.")
-    #####
+            print("xml - not implemented yet. Use prepare evaluation.")
+    ####
 
-
-
-    def load_predictions(self):
-        if not os.path.exists(self.model_log_path):
+    def load_predictions(self, path_to_log):
+        if not os.path.exists(path_to_log):
             print("Can not find model log.")
             return
         
-        with open(self.model_log_path, "r") as read_file:
+        with open(path_to_log, "r") as read_file:
             pred_dict = json.load(read_file)
-            print(pred_dict)
+        return pred_dict['gt_boxes'][0], pred_dict['pred_boxes']
 
-        return pred_dict['gt_boxes'], pred_dict['pred_boxes']
-
-    def save_pred_log(self, predictions_dict):
+    def save_pred_log(self, predictions_dict, output_path):
         """
         {
-            'gt_boxes' : {  
-                'img_id1': [[x1, y1, x2, y2], [x1, y1, x2, y2]]
-                'img_id2': [[x1, y1, x2, y2]]
+            'gt_boxes' : { 
+                'class1' : { 
+                    'img_id1': [[x1, y1, x2, y2], [x1, y1, x2, y2]]
+                    'img_id2': [[x1, y1, x2, y2]]
+                    ...
+                }
                 ...
             }
    
             'pred_boxes' : {
-                'img_id1': {"boxes":[[x1, y1, x2, y2], [x1, y1, x2, y2]], "scores": [0.1, 0.5]}
-                'img_id2': {"boxes":[[x1, y1, x2, y2]], "scores": [0.9]}
+                'class1' : {
+                    'img_id1': {"boxes":[[x1, y1, x2, y2], [x1, y1, x2, y2]], "scores": [0.1, 0.5]}
+                    'img_id2': {"boxes":[[x1, y1, x2, y2]], "scores": [0.9]}
+                    ...
+                }
                 ...
             }
         }
         """
         #if not os.path.exists(self.model_log_path):
-        with open(self.model_log_path, 'w') as f:
+        with open(output_path, 'w') as f:
             json.dump(predictions_dict, f)
+
+def example_plot():
+    precisions =    [1.0, 1.0, 1.0, 0.5, 0.55, 0.57, 0.6, 0.45, 0.48, 0.5]
+    recalls =       [0.2, 0.3, 0.4, 0.4,  0.5,  0.6, 0.8, 0.8,  0.9,  1.0]
+    AP_prec =       [1.0, 1.0, 1.0, 1.0, 1.0, 0.6, 0.6, 0.6, 0.6, 0.5, 0.5]
+    AP_recall =     [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+    me = ModelEvaluator()
+    me.plot_precision_recall(precisions, recalls, AP_prec, AP_recall)
 
 def test_calculation():
     """
@@ -426,8 +490,7 @@ def test_calculation():
 
     #me.evalute_predictions(gt, pred, model_score_thr=0.6, iou_thr=0.1)
 
-
-
+"""
 pl = PredictionLogger("model")
 p_dict = {
     "gt_boxes" : {  
@@ -446,6 +509,23 @@ p_dict = {
 #pl.load_evaluation_set("dataset-v1-dih4cps", "version_2020-12-01")
 
 #pl.save_pred_log(p_dict)
-test_calculation()
+#test_calculation()
+example_plot()
+"""
 
+model_name = "yolov5s_2020-12-15"
+eval_ds_name = "dataset-v1-dih4cps"
+eval_ds_version = "version_2020-12-01" # "v01"
 
+me = ModelEvaluator()
+# eval_path = me.prepare_evaluation(dataset_name=eval_ds_name, dataset_version=eval_ds_version, model_name="yolov5s_2020-12-15")
+# me.evaluate_model(model_name, eval_path)
+p = os.path.join(BASE_PATH, "evaluation", model_name, "dataset-v1-dih4cps_version_2020-12-01", "gt_pred.txt")
+res = me.evaluate_model(model_name, p)
+for class_name in ['shrimp']:
+    print("Class: ", class_name)
+    print("    Precisions:   ", res[class_name]['precisions'][1:10], "...")
+    print("    Recalls:      ", res[class_name]['recalls'][1:10], "...")
+    print("    Thresholds:   ", res[class_name]['model_thrs'][1:10], "...")
+    print("    AP:           ", res[class_name]['AP'])
+print("mAP: ", res['mAP'])

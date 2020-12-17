@@ -160,7 +160,7 @@ class Converter:
         
         out_file = codecs.open(targetFile, 'w')
 
-        prettifyResult = self.prettify(root)
+        prettifyResult = self.prettify(root) 
         out_file.write(prettifyResult.decode('utf8'))
         out_file.close()
 
