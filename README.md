@@ -1,16 +1,9 @@
-Add models to the models/ folder to train new models. 
-Necessary files and folders:
-    - data 
-        - test.record
-        - train.record
-        - object-detection.pbtxt
-    - images 
-        - image files to train ob
-    - training 
-        - model.config
-    - pretrained model (e.g. ssd_mobilenet_v1_coco_2018_01_28)
+## ObjectDetection by Schiller 
+This Repository is used to train and process object detection.
 
-Run the training:
-    python train.py --train_dir=training/ --model_name={*model_name*} --logtostderr
+To train models from the tensorflow object detection API the tensorflow/models repository is cloned from https://github.com/tensorflow/models.
+Also the the repository from the yolov5 is used to train yolov5 models (https://github.com/ultralytics/yolov5).
 
-    model_name = Name des models (e.g. tf_API_data2_v01)
+To evaluate models the Object-Detection-Metrics repository is cloned and adapted (https://github.com/rafaelpadilla/Object-Detection-Metrics/).
+
+
