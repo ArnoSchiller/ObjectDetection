@@ -145,7 +145,7 @@ class ImageAugmentation():
         augmentations = list(self.augmentation_modes.values())
         augmentations.remove(self.augmentation_modes["rotate"])
         augmentations.remove(self.augmentation_modes["grayscale"])
-        # augmentations = [self.augmentation_modes["grayscale"]]
+        #augmentations = [self.augmentation_modes["grayscale"]]
         created_file_paths = []
 
         for aug_mode in augmentations:
@@ -242,6 +242,9 @@ if __name__ == "__main__":
     img_aug = ImageAugmentation()
 
     input_dir = os.path.dirname(__file__)
-    file_path = os.path.join(input_dir, "Shrimps.png")
-    img_aug.save_results = False
-    img_aug.augmentate_image_file(file_path, show_results=True)
+    #file_path = os.path.join(input_dir, "Shrimps.png")
+    file_path = os.path.join(input_dir, "test1_cronjob_2020-09-30_14-30-28_76.png")
+    img_aug.save_results = True
+    img_aug.augmentate_image_file(file_path, show_results=False)
+
+    

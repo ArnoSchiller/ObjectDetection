@@ -1,0 +1,26 @@
+<annotation>
+	<folder>to</folder>
+	<filename>file.png</filename>
+	<path>path/to/file.png</path>
+	<source>
+		<database>Unknown</database>
+	</source>
+	<size>
+		<width>640</width>
+		<height>640</height>
+		<depth>3</depth>
+	</size>
+	<segmented>0</segmented>
+	<object>
+		<name>shrimp</name>
+		<pose>Unspecified</pose>
+		<truncated>1</truncated>
+		<difficult>0</difficult>
+		<bndbox>
+			<xmin>0.5</xmin>
+			<ymin>0.1</ymin>
+			<xmax>0.6</xmax>
+			<ymax>0.2</ymax>
+		</bndbox>
+	</object>
+</annotation>

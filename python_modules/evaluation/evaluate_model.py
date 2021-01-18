@@ -20,7 +20,7 @@ class ModelEvaluator():
         self.dataset_handler = DatasetHandler()
 
         self.dataset_name = "dataset-v1-dih4cps"
-        self.dataset_version = "version_2020-12-01"
+        self.dataset_version = "version_1"
 
         self.with_plots = True
 
@@ -29,11 +29,12 @@ class ModelEvaluator():
         pred_logger = PredictionLogger(model_name)
         
         dataset_path = os.path.join(DATASET_PATH, dataset_name, dataset_version)
-        images_path = os.path.join(dataset_path, "eval_images")
-        labelmap_path, _,_ = self.dataset_handler.download_evaluation_set(dataset_name=dataset_name, dataset_version=dataset_version, mode="csv")
+        images_path = os.path.join(dataset_path, "voc",  "test")
+        # labelmap_path, _,_ = self.dataset_handler.download_evaluation_set(dataset_name=dataset_name, dataset_version=dataset_version, mode="csv")
+        labelmap_path = os.path.join(dataset_path, "labelmap.pbtxt")
         classes = self.dataset_handler.get_classes_from_labelmap(labelmap_path)
 
-        WEIGHTS_PATH = os.path.join(BASE_PATH, "trained_models",model_name, "best.pt")
+        WEIGHTS_PATH = os.path.join(BASE_PATH, "trained_models",model_name, "weights", "best.pt")
         IMG_SIZE = 640
 
         gt_dict = pred_logger.load_evaluation_set(dataset_path)
@@ -46,9 +47,9 @@ class ModelEvaluator():
         output_path = os.path.join(BASE_PATH, "evaluation", model_name)
         if not os.path.exists(output_path):
             os.mkdir(output_path)
-        output_path = os.path.join(output_path, dataset_name + "_" + dataset_version)
-        if not os.path.exists(output_path):
-            os.mkdir(output_path)
+        #output_path = os.path.join(output_path, dataset_name + "_" + dataset_version)
+        #if not os.path.exists(output_path):
+        #    os.mkdir(output_path)
         output_path = os.path.join(output_path, "gt_pred.txt")
         
         pred_logger.save_pred_log(complete_dict, output_path)
@@ -113,6 +114,7 @@ class ModelEvaluator():
             true_positive +=res['true_positive']
             false_positive += res['false_positive']
             false_negative += res['false_negative']
+
         try:
             precision = true_positive/(true_positive + false_positive)
         except ZeroDivisionError:
@@ -123,7 +125,7 @@ class ModelEvaluator():
             recall=0.0
         return (precision, recall)
 
-    def evaluate_model(self, model, log_path):
+    def evaluate_model(self, model, log_path, iou_thr=0.1, score_thr=None):
         pred_logger = PredictionLogger(model)
 
         gt_boxes, pred_boxes = pred_logger.load_predictions(log_path)
@@ -143,12 +145,12 @@ class ModelEvaluator():
         results = {}
         classes = gt_boxes.keys()
         for class_name in classes:
-            results[class_name] = self.evalute_predictions(gt_boxes[class_name], pred_boxes[class_name])
+            results[class_name] = self.evalute_predictions(gt_boxes[class_name], pred_boxes[class_name], iou_thr, score_thr)
 
         results['mAP'] = self.calculate_mAP(classes, results)
         return results
 
-    def evalute_predictions(self, gt_boxes, pred_boxes, iou_thr=0.5):
+    def evalute_predictions(self, gt_boxes, pred_boxes, iou_thr, score_thr):
         """
         Inputs:
             gt_boxes= 
@@ -174,7 +176,11 @@ class ModelEvaluator():
         recalls = []
         model_thrs = []
         total_img_res = {} 
-
+        tp_fp_fn = {}
+        tp_fp_fn['false_positive'] = 0
+        tp_fp_fn['false_negative'] = 0
+        tp_fp_fn['true_positive'] = 0
+ 
         # Sort the predicted boxes in descending order (lowest scoring boxes first):
         for img_id in pred_boxes.keys():
             arg_sort = np.argsort(pred_boxes[img_id]['scores'])
@@ -185,8 +191,11 @@ class ModelEvaluator():
 
         # Get every reached model score and loop over these scores
         model_scores = self.get_model_scores(pred_boxes)
-        sorted_model_scores= sorted(model_scores.keys())# Sort the predicted 
-        for ithr, model_score_thr in enumerate(sorted_model_scores[:-1]):
+        if score_thr == None:
+            sorted_model_scores = sorted(model_scores.keys())# Sort the predicted 
+        else:
+            sorted_model_scores = [score_thr]
+        for ithr, model_score_thr in enumerate(sorted_model_scores[::-1]): # in enumerate([0.000001]):#
             model_thrs.append(model_score_thr)
             img_ids = gt_boxes.keys() 
             for img_id in img_ids:
@@ -220,13 +229,27 @@ class ModelEvaluator():
                 img_results[img_id] = img_res
                 total_img_res[img_id] = img_res
 
-                prec, rec = self.calculate_precision_recall(total_img_res)
+                tp_fp_fn['false_positive'] += img_res['false_positive']
+                tp_fp_fn['false_negative'] += img_res['false_negative']
+                tp_fp_fn['true_positive'] += img_res['true_positive']
+
+                prec, rec = self.calculate_precision_recall(img_results)
                 precisions.append(prec)
                 recalls.append(rec)
         
         total_prec, total_rec = self.calculate_precision_recall(total_img_res)
 
-        
+        print("-"*80)
+        print(tp_fp_fn)
+        fp = tp_fp_fn['false_positive']
+        fn = tp_fp_fn['false_negative']
+        tp = tp_fp_fn['true_positive']
+        try: 
+            print("Precision: ", tp / (tp + fp))
+            print("Recall: ", tp / (tp + fn))
+        except:
+            pass
+        print("-"*80)
         ap = self.calculate_11_points_AP(precisions, recalls)
 
         evaluation = {}
@@ -376,7 +399,7 @@ class PredictionLogger():
             print("Loading evalation set from {} ({})".format(dataset_name, dataset_version)) 
 
             # load csv file
-            gt_csv_path = os.path.join(dataset_path, "eval.csv")
+            gt_csv_path = os.path.join(dataset_path, "test.csv")
             csv_files = [gt_csv_path]
             
             res_dicts = []
@@ -513,16 +536,23 @@ p_dict = {
 example_plot()
 """
 
-model_name = "yolov5s_2020-12-15"
+ext = ""
+model_name = "yolov5l_dsv1" + ext
 eval_ds_name = "dataset-v1-dih4cps"
-eval_ds_version = "version_2020-12-01" # "v01"
+eval_ds_version = "version_1" + ext 
+iout = 0.1
+scoret = 0.0001
 
 me = ModelEvaluator()
-# eval_path = me.prepare_evaluation(dataset_name=eval_ds_name, dataset_version=eval_ds_version, model_name="yolov5s_2020-12-15")
-# me.evaluate_model(model_name, eval_path)
-p = os.path.join(BASE_PATH, "evaluation", model_name, "dataset-v1-dih4cps_version_2020-12-01", "gt_pred.txt")
-res = me.evaluate_model(model_name, p)
-for class_name in ['shrimp']:
+
+eval_path = os.path.join(BASE_PATH, "evaluation", model_name, "gt_pred.txt")
+#eval_path = me.prepare_evaluation(dataset_name=eval_ds_name, dataset_version=eval_ds_version, model_name=model_name)
+res = me.evaluate_model(model_name, eval_path, iou_thr=iout, score_thr=scoret)
+
+class_names = ['shrimp']
+#class_names = [
+#            'shrimp_head_near', 'shrimp_head_middle', 'shrimp_head_far', 'shrimp_tail_near', 'shrimp_tail_middle', 'shrimp_full_far', 'shrimp_full_near', 'shrimp_full_middle', 'shrimp_tail_far', 'shrimp_part_near', 'shrimp_part_middle', 'shrimp_part_far']
+for class_name in class_names:
     print("Class: ", class_name)
     print("    Precisions:   ", res[class_name]['precisions'][1:10], "...")
     print("    Recalls:      ", res[class_name]['recalls'][1:10], "...")

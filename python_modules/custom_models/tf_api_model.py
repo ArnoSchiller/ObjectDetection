@@ -1,13 +1,15 @@
-import tensorflow as tf
+import tensorflow as tf 
 import numpy as np
 import tarfile
 import zipfile
+import glob
 import cv2
 import sys
 import os
 from matplotlib import pyplot as plt
 from collections import defaultdict
 import six.moves.urllib as urllib
+from imageio import imread
 from io import StringIO
 from PIL import Image
 
@@ -26,7 +28,7 @@ from utils import label_map_util
 from utils import visualization_utils as vis_util
 
 
-class TfModel():
+class Model():
 
     """
     custom_model_test: This module can be used to test a trained model. 
@@ -46,11 +48,11 @@ class TfModel():
     Version:    (Author) Description:                                   Date:
     v0.0.1      (AS) First initialize. Added important configurations.  14.10.2020\n
     """
-    def __init__(self):
+    def __init__(self, model_name, img_size):
         # Any model exported using the `export_inference_graph.py` tool can be loaded here simply by changing `PATH_TO_CKPT` to point to a new .pb file.
         #
         # By default we use an "SSD with Mobilenet" model here. See the [detection model zoo](https://github.com/tensorflow/models/blob/master/object_detection/g3doc/detection_model_zoo.md) for a list of other models that can be run out-of-the-box with varying speeds and accuracies.
-
+        self.img_size = img_size
         DATASET_NAME = "dataset-v1-dih4cps"
         labelmap_path = os.path.join(DATASET_PATH, DATASET_NAME, 'labelmap.pbtxt')
 
@@ -60,7 +62,8 @@ class TfModel():
         # checkpoint_path = os.path.join(model_path, "checkpoint")
         # saved_model_path = os.path.join(model_path, 'saved_model', 'saved_model.pb')
         
-        model_path = os.path.join(os.path.dirname(__file__), "tf_model")
+
+        model_path = os.path.join("..", "trained_models", model_name, "saved_model")
         checkpoint_path = os.path.join(model_path, "variables")
         saved_model_path = os.path.join(model_path, 'saved_model.pb')
         print(saved_model_path)
@@ -86,6 +89,16 @@ class TfModel():
         categories = label_map_util.convert_label_map_to_categories(label_map, max_num_classes=NUM_CLASSES, use_display_name=True)
         self.category_index = label_map_util.create_category_index(categories)
         print(self.category_index)
+
+    def load_images(self, images_path):
+        files = glob.glob(os.path.abspath(images_path) + "*.png")
+
+        data = []
+        for f in files:
+            img = imread(f)
+            data.append((f, img))
+
+        return data
 
     def image_detection_test(self):
         """ testing with images 
@@ -147,6 +160,94 @@ class TfModel():
                 print(count)
 
                 return boxes, scores, self.category_index
+
+
+def detect(images_dir, model_name, img_size, original_img_size, txt_out_path=None, xml_out=False, dict_out=False, all_classes=None, visualisation=True):
+    if xml_out:
+        from helpers.xml_handler import XMLHandler
+        xml_handler = XMLHandler()
+    
+    if dict_out:
+        if all_classes == None:
+            print("Add a list of possible classes for dict output.")
+            return {}
+        output_dict = {}
+        for class_name in all_classes:
+            output_dict[class_name] = {}
+
+    out_file_path = ""
+
+    model = Model(model_name, img_size)
+
+    data = model.load_images(images_dir)
+
+    for idx, (path, img) in enumerate(data):
+        boxes, scores, classes, img_size = model.predict(img, original_img_size=original_img_size)
+
+        if not txt_out_path is None:
+            _, file_name = os.path.split(path)
+            file_name = file_name.split(".")[0]
+            # write a txt for every file including the gts like 
+            # {class} {xmin} {ymin} {xmax} {ymax}
+            if idx+1 != len(data):
+                print(f"    Writing file {idx+1} of {len(data)}", end='\r')
+            else:
+                print(f"    Writing file {idx+1} of {len(data)}")
+
+            with open(os.path.join(txt_out_path, file_name + ".txt"), "w") as f:
+                for idx, gt_box in enumerate(boxes):
+                    xmin, ymin, xmax, ymax = gt_box
+                    class_name = classes[idx]
+                    s = scores[idx]
+                    f.write(f"{class_name} {s} {xmin} {ymin} {xmax} {ymax}\n")
+
+        if xml_out:
+            path, fname = os.path.split(path) 
+            path, _ = os.path.split(path) 
+            path = os.path.join(path, "eval_images_pred")
+            if not os.path.exists(path):
+                os.mkdir(path)
+            fname = fname.split(".")[0] + "_pred.xml"
+            out_file_path = os.path.join(path, fname)
+        
+            xml_handler.create_detection_xml(output_filepath=out_file_path,
+                                        img_filepath=path,
+                                        boxes=boxes,
+                                        scores=scores, 
+                                        classes=classes,
+                                        img_size=original_img_size) 
+
+            return os.path.split(out_file_path)[0]
+
+        if dict_out:
+            for idx, box in enumerate(boxes):
+                class_name = classes[idx]
+                file_name = os.path.split(path)[-1]
+                bbox = [int(box[0]), int(box[1]), int(box[2]), int(box[3])]
+                if not list(output_dict[class_name].keys()).count(file_name)>0:
+                    output_dict[class_name][file_name] = {}
+                if not list(output_dict[class_name][file_name].keys()).count('boxes')>0:
+                    output_dict[class_name][file_name]['boxes'] = [bbox]
+                    output_dict[class_name][file_name]['scores'] = [scores[idx]]
+                else:
+                    output_dict[class_name][file_name]['boxes'].append(bbox)
+                    output_dict[class_name][file_name]['scores'].append(scores[idx])
+
+        if visualisation:
+            img = np.array(cv2.imread(path))
+            print(len(boxes))
+            for idx, bb in enumerate(boxes):
+                class_name = classes[idx]
+                x,y = int(bb[0]), int(bb[1])
+                w,h = int(bb[2] - bb[0]), int(bb[3] - bb[1])
+                cv2.rectangle(img,(x,y),(x+w,y+h),(0,255,0),2)
+                cv2.putText(img,str(class_name),(x+w+10,y+h),0,0.3,(0,255,0))
+            cv2.imshow("Show",img)
+            cv2.waitKey()  
+            cv2.destroyAllWindows()
+
+    if dict_out:
+        return output_dict
 
 
 import onnx2keras
