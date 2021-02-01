@@ -11,3 +11,7 @@ tf2_object_detection_API/pretrained_models/
 trained_models/0_weitere/
 
 trained_models/.vscode/
+
+evaluation/.vscode/
+
+evaluation/Object-Detection-Metrics/
