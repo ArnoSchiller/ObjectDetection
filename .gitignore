@@ -1,4 +1,9 @@
+*.ini 
 
 datasets/dataset-v1-dih4cps/
 
 datasets/dataset-v2-dih4cps/
+
+tf2_object_detection_API/models/
+
+tf2_object_detection_API/pretrained_models/
